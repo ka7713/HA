@@ -1,0 +1,441 @@
+esphome:
+  name: "snug-fan"
+  on_boot:
+    - priority: -200.0
+      then:
+      - stepper.report_position: # Set stepper to global variable
+          id: fan_door_stepper
+          position: !lambda return id(current_step);
+      - stepper.set_target: # Set stepper to global variable
+          id: fan_door_stepper
+          target: !lambda return id(current_step);
+      - if:
+          condition:
+            - lambda: 'return id(current_step) == 0;'
+          then:
+            - cover.template.publish:
+                id: blinded
+                state: CLOSED
+                current_operation: IDLE
+      - if:
+          condition:
+            - lambda: 'return id(current_step) == id(end_step);'
+          then:
+            - cover.template.publish:
+                id: blinded
+                state: OPEN
+                current_operation: IDLE
+      - if:
+          condition:
+            - lambda: 'return (id(current_step) != 0) && (id(current_step) != id(end_step));'
+          then:
+            - cover.template.publish:
+                id: blinded
+                position: !lambda 'return (float(float(id(fan_door_stepper).current_position) / float(id(end_step))));' 
+                current_operation: IDLE
+                
+esp32:
+  board: nodemcu-32s
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "입력"
+
+ota:
+  password: "입력"
+
+wifi:
+  ssid: "입력"
+  password: "입력"
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Snug-Fan Fallback Hotspot"
+    password: "입력"
+
+#web_server:
+#  port: 80
+  
+captive_portal:
+
+globals:
+  - id: current_step
+    type: int
+    restore_value: true
+    initial_value: '0'
+  # Integer for Setup Mode
+  # 0 무, 1열림, 2 닫힘
+  - id: end_step
+    type: int
+    restore_value: true
+    initial_value: '-400'
+  - id: setting_mode 
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: cover_speed
+    type: int
+    restore_value: false
+    initial_value: '200'
+  - id: id_rtttl_sound
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: id_long_press_helper
+    type: int
+    restore_value: false
+    initial_value: '0'
+  # off > id_fan_speed_1 > id_fan_speed_2 > id_fan_speed_3 > off
+  - id: id_fan_speed_1
+    type: int
+    restore_value: false
+    initial_value: '15'
+  - id: id_fan_speed_2
+    type: int
+    restore_value: false
+    initial_value: '50'
+  - id: id_fan_speed_3
+    type: int
+    restore_value: false
+    initial_value: '85'
+
+esp32_touch:
+  #터치 감도 디버그 출력
+  setup_mode: false
+
+stepper:
+  - platform: uln2003
+    id: fan_door_stepper
+    pin_a: GPIO14
+    pin_b: GPIO27
+    pin_c: GPIO26
+    pin_d: GPIO25
+    sleep_when_done: true
+    max_speed: 100
+    #step_mode: FULL_STEP
+    acceleration: inf
+    deceleration: inf
+
+output:
+  - platform: ledc
+    pin: GPIO2
+    id: id_pwm_fan
+    min_power: 0%
+    max_power: 98%
+    frequency: 25000 Hz
+    channel: 0
+    
+  - platform: ledc
+    pin: GPIO15
+    id: id_rtttl_out
+    #frequency: 100 Hz
+    channel: 2
+    
+rtttl:
+  output: id_rtttl_out
+  on_finished_playback:
+    - globals.set:
+        id: id_rtttl_sound
+        value: '0'
+    
+fan:
+  - platform: speed
+    output: id_pwm_fan
+    id: id_fan_speed
+    name: fan_speed
+    on_turn_on:
+      - cover.open: blinded
+      - script.execute: id_buzzer_on
+    on_turn_off:
+      - cover.close: blinded
+      - script.execute: id_buzzer_off
+    on_speed_set:
+      - script.execute: id_buzzer_beep
+      
+display:
+    platform: tm1637
+    id: id_tm1637_display
+    clk_pin: GPIO17
+    dio_pin: GPIO16
+    inverted: false
+    length: 4
+    update_interval: 500ms
+    lambda: |-
+      if (id(id_fan_speed).state)
+        it.printf("%3d", id(id_fan_speed).speed);
+      else
+        it.print("    ");
+        
+button:
+  - platform: template
+    name: btn_close # Software Button to replicate the Physical Button
+    id: btn_close
+    on_press:
+      then:
+        - stepper.set_target:
+            id: fan_door_stepper
+            target: '0'
+        - globals.set:
+            id: current_step
+            value: '0'
+
+  - platform: template
+    name: btn_open # Software Button to replicate the Physical Button
+    id: btn_open
+    on_press:
+      then:
+        - stepper.set_target:
+            id: fan_door_stepper
+            target: !lambda return id(end_step);
+        - globals.set:
+            id: current_step
+            value: !lambda return id(end_step);
+
+  #- platform: template
+  #  name: btn_log # Software Button to replicate the Physical Button
+  #  id: btn_log
+  #  on_press:
+  #    then: # Enter Setting Mode
+  #    - logger.log:
+  #        format: "current_step:%d, end_step:%d settingmode:%d"
+  #        args: [ 'id(current_step)', 'id(end_step)', 'id(setting_mode)' ]
+
+  #- platform: template
+  #  name: btn_buzzer1
+  #  id: btn_buzzer1
+  #  on_press:
+  #    then:
+  #      #- rtttl.play: 'MissionImp:d=16,o=6,b=95:32d,32d#,32d,32d#,32d,32d#,32d,32d#,32d,32d,32d#,32e,32f,32f#,32g,g,8p,g,8p,a#,p,c7,p,g,8p,g,8p,f,p,f#,p,g,8p,g,8p,a#,p,c7,p,g,8p,g,8p,f,p,f#,p,a#,g,2d,32p,a#,g,2c#,32p,a#,g,2c,a#5,8c,2p,32p,a#5,g5,2f#,32p,a#5,g5,2f,32p,a#5,g5,2e,d#,8d'
+  #      - script.execute: id_buzzer_on
+        
+  #- platform: template
+  #  name: btn_buzzer2
+  #  id: btn_buzzer2
+  #  on_press:
+  #    then:
+  #      - script.execute: id_buzzer_off
+  
+  #- platform: template
+  #  name: btn_buzzer3
+  #  id: btn_buzzer3
+  #  on_press:
+  #    then:
+  #      - script.execute: id_buzzer_beep
+        
+  - platform: template
+    name: btn_set_open
+    id: btn_set_open
+    on_press:
+      then:
+      - lambda: |-
+          if( id(setting_mode) == 0 )
+          {
+            ESP_LOGD("custom", "열기 위치 시작");
+            id(setting_mode) = 2;
+            id(fan_door_stepper).set_max_speed(25);
+            id(fan_door_stepper).set_target(2048);
+          }
+          else if(id(setting_mode) == 2)
+          {
+            // end_step 위치 설정
+            id(end_step) = id(fan_door_stepper).current_position;
+            ESP_LOGD("custom", "열기 위치 설정 %d", id(end_step));
+            id(fan_door_stepper).set_target(id(end_step));
+            id(setting_mode) = 0;
+            id(fan_door_stepper).set_max_speed(id(cover_speed));
+            id(current_step) = id(end_step);
+          }
+          
+  - platform: template
+    name: btn_set_close
+    id: btn_set_close
+    on_press:
+      then:
+      - lambda: |-
+          if( id(setting_mode) == 0 )
+          {
+            ESP_LOGD("custom", "닫기 위치 시작");
+            id(fan_door_stepper).report_position(0);
+            id(setting_mode) = 1;
+            id(fan_door_stepper).set_max_speed(25);
+            id(fan_door_stepper).set_target(-2048);
+          }
+          else if(id(setting_mode) == 1)
+          {
+            // 0로 위치 설정
+            ESP_LOGD("custom", "닫기 위치 설정");
+            id(fan_door_stepper).report_position(0);
+            id(fan_door_stepper).set_target(0);
+            id(current_step) = 0;
+            id(setting_mode) = 0;
+            id(fan_door_stepper).set_max_speed(id(cover_speed));
+          }
+
+cover:
+  - platform: template
+    name: fan_cover
+    id: blinded
+    open_action:
+      then:
+      - logger.log: "Opening"
+      - logger.log:
+          format: "Endstep is: %d"
+          args: [ 'id(end_step)' ]
+      - stepper.set_target:
+          id: fan_door_stepper
+          target: !lambda return id(end_step);
+      - cover.template.publish:
+          id: blinded
+          position: !lambda 'return (float(float(id(fan_door_stepper).current_position) / float(id(end_step))));' 
+          current_operation: OPENING
+      - wait_until:
+          lambda: 'return id(fan_door_stepper).current_position == id(end_step);'
+      - globals.set:
+          id: current_step
+          value: !lambda return id(fan_door_stepper).current_position; 
+      - cover.template.publish:
+          id: blinded
+          state: OPEN 
+          current_operation: IDLE
+
+    close_action:
+      then:
+      - logger.log: "Closing"
+      - stepper.set_target:
+          id: fan_door_stepper
+          target: '0'
+      - cover.template.publish:
+          id: blinded
+          position: !lambda 'return (float(float(id(fan_door_stepper).current_position) / float(id(end_step))));' 
+          current_operation: CLOSING
+      - wait_until:
+          lambda: 'return id(fan_door_stepper).current_position == 0;'
+      - globals.set:
+          id: current_step
+          value: !lambda return id(fan_door_stepper).current_position; 
+      - cover.template.publish:
+          id: blinded
+          state: CLOSED
+          current_operation: IDLE
+            
+    position_action:
+      then:
+
+    stop_action:
+      then:
+      - stepper.set_target:
+          id: fan_door_stepper
+          target: !lambda return id(fan_door_stepper).current_position;
+      - globals.set:
+          id: current_step
+          value: !lambda return id(fan_door_stepper).current_position;
+      - cover.template.publish:
+          id: blinded
+          position: !lambda 'return (float(float(id(fan_door_stepper).current_position) / float(id(end_step))));' 
+          current_operation: IDLE
+    has_position: true
+    device_class: shutter
+
+script:
+  - id: id_buzzer_on
+    then:
+      - globals.set:
+          id: id_rtttl_sound
+          value: '1'
+      - rtttl.play: 's:d=4,o=5,b=100:16c6,16c#6,16d6,16d#6,16e6'
+      
+  - id: id_buzzer_off
+    then:
+      - globals.set:
+          id: id_rtttl_sound
+          value: '1'
+      - rtttl.play: 's:d=4,o=5,b=100:16e6,16d#6,16d6,16c#6,16c6'
+      
+  - id: id_buzzer_beep
+    then:
+    - if:
+        # on, off 사운드중 beep 방지
+        condition:
+          - lambda: 'return id(id_rtttl_sound) == 0;'
+        then:
+          - rtttl.play: 's:d=4,o=5,b=100:16a#6,16b6'
+ 
+  - id: id_toggle_fan_speed
+    then:
+      - logger.log: "id_toggle_fan_speed"
+      - lambda: |-
+          auto cur_speed = id(id_fan_speed).speed;
+          if (cur_speed < id(id_fan_speed_1) || cur_speed >= id(id_fan_speed_3))
+          {
+            auto call = id(id_fan_speed).make_call();
+            call.set_speed(id(id_fan_speed_1));
+            call.perform();
+          }
+          else if (cur_speed < id(id_fan_speed_2))
+          {
+            auto call = id(id_fan_speed).make_call();
+            call.set_speed(id(id_fan_speed_2));
+            call.perform();
+          }
+          else if (cur_speed < id(id_fan_speed_3))
+          {
+            auto call = id(id_fan_speed).make_call();
+            call.set_speed(id(id_fan_speed_3));
+            call.perform();
+          }
+          ESP_LOGD("custom", "fan speed %d", id(id_fan_speed).speed);
+          
+  - id: id_toggle_fan_toggle
+    then:
+      - logger.log: "id_toggle_fan_toggle"
+      - if:
+          condition:
+            fan.is_on: id_fan_speed
+          then:
+            fan.turn_off: id_fan_speed
+          else:
+            fan.turn_on: id_fan_speed
+
+  - id: script_button_press
+    then:
+      - delay: 4000ms
+      - if:
+          condition:
+            binary_sensor.is_on: id_touch_pad
+          then:
+            - globals.set:
+                id: id_long_press_helper
+                value: '1'
+            - script.execute: id_toggle_fan_toggle
+
+  - id: script_button_release
+    then:
+      # 0 short, 1 long
+      - script.stop: script_button_press
+      - if:
+          condition:
+            - lambda: 'return id(id_long_press_helper) == 0;'
+          then:
+            - script.execute: id_toggle_fan_speed
+      - globals.set:
+          id: id_long_press_helper
+          value: '0'
+      
+binary_sensor:
+  - platform: esp32_touch
+    name: "Touch Pad"
+    pin: GPIO12
+    threshold: 930
+    id: id_touch_pad
+    on_press:
+      then:
+        - script.execute: script_button_press
+    on_release:
+      then:
+        - script.execute: script_button_release
